@@ -1,10 +1,12 @@
 import tracemalloc
 import gc
+import os
 from timeit import default_timer as timer
 import opt_einsum as oe
-from numpy import array
 import numpy as np
 import sqlite3
+from dotenv import load_dotenv
+load_dotenv()
 
 import InfiniQuantumSim.sql_commands as sqlC
 import InfiniQuantumSim.TLtensor as tlt
@@ -21,7 +23,13 @@ def connect_and_setup_db(db: str = "sqlite"):
             cur = con.cursor()
         case "psql":
             import psycopg2 as psql
-            con = psql.connect(user='postgres', password='password', database='postgres', host='localhost')
+            con = psql.connect(
+                user=os.getenv('POSTGRES_USER', 'postgres'),
+                password=os.getenv('POSTGRES_PASSWORD', 'password'),
+                database=os.getenv('POSTGRES_DB', 'postgres'),
+                host=os.getenv('POSTGRES_HOST', 'localhost'),
+                port=os.getenv('POSTGRES_PORT', '5432')
+            )
             con.set_isolation_level(psql.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             cur = con.cursor()
 
@@ -139,26 +147,55 @@ def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: i
 
         psql_mems = []
         psql_times = []
-        contr_result = contraction_eval_psql(query, cur)
-        tracemalloc.start()
-        for _ in range(n_runs):
-            tic = timer()
-            mem_tic, _ = tracemalloc.get_traced_memory()
-            contr_result = contraction_eval_psql(query, cur)
-            _, mem_toc = tracemalloc.get_traced_memory()
-            toc = timer()
-            psql_mems.append(mem_toc - mem_tic)
-            psql_times.append(toc - tic)
-            tracemalloc.clear_traces()
+        
+        # Initial test run to check if query completes
+        contr_result = contraction_eval_psql(query, cur, con, timeout=timeout_seconds)
+        
+        if contr_result is None:
+            # Timeout occurred on first run
+            cur.close()
+            con.close()
+            result["psql"] = {"runs": 0, "time": None, "memory": None, "non-zero": None, "timeout": True}
+        else:
+            tracemalloc.start()
+            timeout_count = 0
+            
+            for run_idx in range(n_runs):
+                tic = timer()
+                mem_tic, _ = tracemalloc.get_traced_memory()
+                
+                contr_result = contraction_eval_psql(query, cur, con, timeout=timeout_seconds)
+                
+                if contr_result is None:
+                    # Timeout on this run
+                    timeout_count += 1
+                    if timeout_count >= 3:  # Skip after 3 consecutive timeouts
+                        break
+                    continue
+                
+                _, mem_toc = tracemalloc.get_traced_memory()
+                toc = timer()
+                psql_mems.append(mem_toc - mem_tic)
+                psql_times.append(toc - tic)
+                tracemalloc.clear_traces()
 
-        tracemalloc.stop()
+            tracemalloc.stop()
 
-        cur.close()
-        con.close()
+            cur.close()
+            con.close()
 
-        result["psql"] = {"runs": n_runs, "time": psql_times, "memory": psql_mems, "non-zero": len(contr_result)}
-        del con, cur, tic, toc, mem_tic, mem_toc
-        gc.collect()
+            if psql_times:
+                result["psql"] = {
+                    "runs": len(psql_times), 
+                    "time": psql_times, 
+                    "memory": psql_mems, 
+                    "non-zero": len(contr_result),
+                    "timeout": timeout_count > 0
+                }
+            else:
+                result["psql"] = {"runs": 0, "time": None, "memory": None, "non-zero": None, "timeout": True}
+            
+            gc.collect()
     else:
         result["psql"] = {"time": None, "memory": None, "non-zero": None}
 

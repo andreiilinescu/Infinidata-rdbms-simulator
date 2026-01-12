@@ -4,12 +4,13 @@ PostgreSQL backend for quantum circuit simulation queries.
 import threading
 
 
-def contraction_eval_psql(query, db_cur, timeout=None):
+def contraction_eval_psql(query, db_cur, db_con=None, timeout=None):
     """Execute PostgreSQL query with optional timeout.
     
     Args:
         query: SQL query to execute
         db_cur: Database cursor
+        db_con: Database connection (optional, needed for cancellation)
         timeout: Maximum execution time in seconds. If None, no timeout.
         
     Returns:
@@ -37,10 +38,9 @@ def contraction_eval_psql(query, db_cur, timeout=None):
     if thread.is_alive():
         # Timeout occurred - cancel the query
         try:
-            # PostgreSQL cancel requires connection.cancel()
-            # This needs to be called from connection, not cursor
-            # For now, we'll let the thread timeout
-            pass
+            if db_con is not None:
+                # PostgreSQL cancel requires connection.cancel()
+                db_con.cancel()
         except:
             pass
         
