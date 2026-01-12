@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import time
 import duckdb
-from InfiniQuantumSim.sqlEinSum import contraction_eval_duckdb
+from InfiniQuantumSim.db_backends import contraction_eval_duckdb
 
 
 def test_duckdb_no_timeout():

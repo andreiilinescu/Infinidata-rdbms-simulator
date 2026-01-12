@@ -5,12 +5,14 @@ import opt_einsum as oe
 from numpy import array
 import numpy as np
 import sqlite3
-import duckdb
-import threading
-import time
 
 import InfiniQuantumSim.sql_commands as sqlC
 import InfiniQuantumSim.TLtensor as tlt
+from InfiniQuantumSim.db_backends import (
+    contraction_eval_duckdb,
+    contraction_eval_sqlite,
+    contraction_eval_psql
+)
 
 def connect_and_setup_db(db: str = "sqlite"):
     match db:
@@ -37,72 +39,6 @@ def change_page_size_sqlite(con, cur, size: int):
     cur.execute(f'PRAGMA page_size = {size};')
     cur.execute('VACUUM;')
     con.commit()
-
-def contraction_eval_sqlite(query, db_con, db_cur):
-    result = db_cur.execute(query)
-    db_con.commit()
-    return result.fetchall()
-
-def contraction_eval_psql(query, db_cur):
-    db_cur.execute(query)
-    return db_cur.fetchall()
-
-def contraction_eval_duckdb(query, timeout=None):
-    """Execute DuckDB query with optional timeout.
-    
-    Args:
-        query: SQL query to execute
-        timeout: Maximum execution time in seconds. If None, no timeout.
-        
-    Returns:
-        Query results or None if timeout occurred
-    """
-    if timeout is None:
-        return duckdb.sql(query).fetchall()
-    
-    # Create a persistent connection for timeout handling
-    conn = duckdb.connect()
-    result = [None]
-    exception = [None]
-    
-    def run_query():
-        try:
-            result[0] = conn.sql(query).fetchall()
-        except Exception as e:
-            exception[0] = e
-    
-    thread = threading.Thread(target=run_query, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
-    
-    if thread.is_alive():
-        # Timeout occurred - interrupt the query
-        try:
-            conn.interrupt()
-        except:
-            pass
-        
-        # Give thread time to clean up, but don't wait forever
-        thread.join(timeout=0.5)
-        
-        # Close connection regardless of thread state
-        try:
-            conn.close()
-        except:
-            pass
-        
-        return None  # Indicate timeout
-    
-    # Query completed normally
-    try:
-        conn.close()
-    except:
-        pass
-    
-    if exception[0] is not None:
-        raise exception[0]
-    
-    return result[0]
 
 def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: int, skip_db: list = [], p_size = None, timeout_seconds=None):
     eqc_tensor_mems = []
@@ -139,7 +75,7 @@ def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: i
     result = {"sqlite": {}, "psql": {}, "ducksql": {}, "eqc": {"tensor": {"memory": eqc_tensor_mems, "time": eqc_tensor_times}, "contraction": {"memory": eqc_contr_mems, "time": eqc_contr_times}}}
     if "sqlite" not in skip_db:
         ## one-shot SQLite performance
-        con = sqlite3.connect(':memory:')
+        con = sqlite3.connect(':memory:', check_same_thread=False)
         cur = con.cursor()
 
         if p_size is not None:
@@ -147,24 +83,53 @@ def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: i
 
         sqlite_mems = []
         sqlite_times = []
-        contr_result = contraction_eval_sqlite(query, con, cur)
-        tracemalloc.start()
-        for _ in range(n_runs):
-            tic = timer()
-            mem_tic, _ = tracemalloc.get_traced_memory()
-            contr_result = contraction_eval_sqlite(query, con, cur)
-            _, mem_toc = tracemalloc.get_traced_memory()
-            toc = timer()
-            sqlite_mems.append(mem_toc - mem_tic)
-            sqlite_times.append(toc - tic)
-            tracemalloc.clear_traces()
         
-        con.commit()
-        con.close()
+        # Initial test run to check if query completes
+        contr_result = contraction_eval_sqlite(query, con, cur, timeout=timeout_seconds)
+        
+        if contr_result is None:
+            # Timeout occurred on first run
+            con.close()
+            result["sqlite"] = {"runs": 0, "time": None, "memory": None, "non-zero": None, "timeout": True}
+        else:
+            tracemalloc.start()
+            timeout_count = 0
+            
+            for run_idx in range(n_runs):
+                tic = timer()
+                mem_tic, _ = tracemalloc.get_traced_memory()
+                
+                contr_result = contraction_eval_sqlite(query, con, cur, timeout=timeout_seconds)
+                
+                if contr_result is None:
+                    # Timeout on this run
+                    timeout_count += 1
+                    if timeout_count >= 3:  # Skip after 3 consecutive timeouts
+                        break
+                    continue
+                
+                _, mem_toc = tracemalloc.get_traced_memory()
+                toc = timer()
+                sqlite_mems.append(mem_toc - mem_tic)
+                sqlite_times.append(toc - tic)
+                tracemalloc.clear_traces()
+            
+            tracemalloc.stop()
+            con.commit()
+            con.close()
 
-        result["sqlite"] = {"runs": n_runs, "time": sqlite_times, "memory": sqlite_mems, "non-zero": len(contr_result)}
-        del con, cur, tic, toc, mem_tic, mem_toc
-        gc.collect()
+            if sqlite_times:
+                result["sqlite"] = {
+                    "runs": len(sqlite_times), 
+                    "time": sqlite_times, 
+                    "memory": sqlite_mems, 
+                    "non-zero": len(contr_result),
+                    "timeout": timeout_count > 0
+                }
+            else:
+                result["sqlite"] = {"runs": 0, "time": None, "memory": None, "non-zero": None, "timeout": True}
+            
+            gc.collect()
     else:
         result['sqlite'] = {"time": None, "memory": None, "iterations": None}
 
