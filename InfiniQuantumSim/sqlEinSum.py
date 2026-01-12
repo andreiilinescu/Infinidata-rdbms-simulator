@@ -6,6 +6,8 @@ from numpy import array
 import numpy as np
 import sqlite3
 import duckdb
+import threading
+import time
 
 import InfiniQuantumSim.sql_commands as sqlC
 import InfiniQuantumSim.TLtensor as tlt
@@ -45,10 +47,52 @@ def contraction_eval_psql(query, db_cur):
     db_cur.execute(query)
     return db_cur.fetchall()
 
-def contraction_eval_duckdb(query):
-    return duckdb.sql(query).fetchall()
+def contraction_eval_duckdb(query, timeout=None):
+    """Execute DuckDB query with optional timeout.
+    
+    Args:
+        query: SQL query to execute
+        timeout: Maximum execution time in seconds. If None, no timeout.
+        
+    Returns:
+        Query results or None if timeout occurred
+    """
+    if timeout is None:
+        return duckdb.sql(query).fetchall()
+    
+    # Create a persistent connection for timeout handling
+    conn = duckdb.connect()
+    result = [None]
+    exception = [None]
+    
+    def run_query():
+        try:
+            result[0] = conn.sql(query).fetchall()
+        except Exception as e:
+            exception[0] = e
+    
+    thread = threading.Thread(target=run_query)
+    thread.start()
+    thread.join(timeout=timeout)
+    
+    if thread.is_alive():
+        # Timeout occurred - interrupt the query
+        try:
+            conn.interrupt()
+        except:
+            pass
+        thread.join(timeout=1.0)  # Give it a second to clean up
+        conn.close()
+        return None  # Indicate timeout
+    
+    conn.close()
+    
+    if exception[0] is not None:
+        raise exception[0]
+    
+    return result[0]
 
-def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: int, skip_db: list = [], p_size = None):
+def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: int, skip_db: list = [], p_size = None, timeout_seconds=None):
     eqc_tensor_mems = []
     eqc_tensor_times = []
     eqc_contr_mems = []
@@ -144,23 +188,50 @@ def db_time_contraction_eval(einstein, parameters, tensors, path_info, n_runs: i
     if "ducksql" not in skip_db:
         duck_mems = []
         duck_times = []
-        contr_result = duckdb.sql(query).fetchall()
-        tracemalloc.start()
-        for _ in range(n_runs):
-            tic = timer()
-            mem_tic, _ = tracemalloc.get_traced_memory()
-            contr_result = duckdb.sql(query).fetchall()
-            _, mem_toc = tracemalloc.get_traced_memory()
-            toc = timer()
-            duck_mems.append(mem_toc - mem_tic)
-            duck_times.append(toc - tic)
-            tracemalloc.clear_traces()
-
-        tracemalloc.stop()
-        del tic, toc, mem_tic, mem_toc
-        gc.collect()
         
-        result["ducksql"] = {"runs": n_runs, "time": duck_times, "memory": duck_mems, "non-zero": len(contr_result)}
+        # Initial test run to check if query completes
+        contr_result = contraction_eval_duckdb(query, timeout=timeout_seconds)
+        
+        if contr_result is None:
+            # Timeout occurred on first run
+            result["ducksql"] = {"runs": 0, "time": None, "memory": None, "non-zero": None, "timeout": True}
+        else:
+            tracemalloc.start()
+            timeout_count = 0
+            
+            for run_idx in range(n_runs):
+                tic = timer()
+                mem_tic, _ = tracemalloc.get_traced_memory()
+                
+                contr_result = contraction_eval_duckdb(query, timeout=timeout_seconds)
+                
+                if contr_result is None:
+                    # Timeout on this run
+                    timeout_count += 1
+                    if timeout_count >= 3:  # Skip after 3 consecutive timeouts
+                        break
+                    continue
+                
+                _, mem_toc = tracemalloc.get_traced_memory()
+                toc = timer()
+                duck_mems.append(mem_toc - mem_tic)
+                duck_times.append(toc - tic)
+                tracemalloc.clear_traces()
+
+            tracemalloc.stop()
+            
+            if duck_times:
+                result["ducksql"] = {
+                    "runs": len(duck_times), 
+                    "time": duck_times, 
+                    "memory": duck_mems, 
+                    "non-zero": len(contr_result),
+                    "timeout": timeout_count > 0
+                }
+            else:
+                result["ducksql"] = {"runs": 0, "time": None, "memory": None, "non-zero": None, "timeout": True}
+            
+            gc.collect()
     else:
         result["ducksql"] = {"time": None, "memory": None, "non-zero": None}
 

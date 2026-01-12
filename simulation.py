@@ -53,7 +53,7 @@ def save_results_to_json(results, fname = None):
         json.dump(results, file)
 
 
-def simulation_benchmark(n_runs, circuit_n_qubits, circuits, mem_limit_bytes=2**34, time_limit_seconds=2**4, mem_db_only=False):
+def simulation_benchmark(n_runs, circuit_n_qubits, circuits, mem_limit_bytes=2**34, time_limit_seconds=2**4, mem_db_only=False, timeout_seconds=15):
     results = {}
     skip_db = []
 
@@ -70,7 +70,7 @@ def simulation_benchmark(n_runs, circuit_n_qubits, circuits, mem_limit_bytes=2**
             circuit_dict = circuit(n_qubits)
             qc = tlt.QuantumCircuit(circuit_dict=circuit_dict)
 
-            results[cname][n_qubits] = qc.benchmark_ciruit_performance(n_runs, oom = oom)
+            results[cname][n_qubits] = qc.benchmark_ciruit_performance(n_runs, oom = oom,timeout_seconds=timeout_seconds)
             for method in results[cname][n_qubits].keys():
                 if method in oom or method == "eqc":
                         continue

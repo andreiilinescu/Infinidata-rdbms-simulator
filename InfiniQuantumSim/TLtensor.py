@@ -358,7 +358,7 @@ class QuantumCircuit:
 
         return result
 
-    def benchmark_ciruit_performance(self, n_runs, oom = [], p_size = None):
+    def benchmark_ciruit_performance(self, n_runs, oom = [], p_size = None, timeout_seconds=15):
         # Create dict to store all benchmarking results
         performance = {
             "psql": {},
@@ -381,7 +381,7 @@ class QuantumCircuit:
         
         # sql benchmark
         ## in-db one-shot benchmark
-        perf_dict = ses.db_time_contraction_eval(einstein, parameters, self.tensor_uniques, path_info, n_runs, skip_db = oom, p_size=p_size)
+        perf_dict = ses.db_time_contraction_eval(einstein, parameters, self.tensor_uniques, path_info, n_runs, skip_db = oom, p_size=p_size, timeout_seconds=timeout_seconds)
         performance["sqlite"] = perf_dict["sqlite"]
         performance["psql"] = perf_dict["psql"]
         performance["ducksql"] = perf_dict["ducksql"]
