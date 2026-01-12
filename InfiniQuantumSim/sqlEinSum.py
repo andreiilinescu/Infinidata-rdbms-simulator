@@ -64,14 +64,17 @@ def contraction_eval_duckdb(query, timeout=None):
     conn = duckdb.connect()
     result = [None]
     exception = [None]
+    completed = [False]
     
     def run_query():
         try:
             result[0] = conn.sql(query).fetchall()
+            completed[0] = True
         except Exception as e:
-            exception[0] = e
+            if not completed[0]:  # Only store exception if query didn't complete
+                exception[0] = e
     
-    thread = threading.Thread(target=run_query)
+    thread = threading.Thread(target=run_query, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
     
@@ -81,11 +84,23 @@ def contraction_eval_duckdb(query, timeout=None):
             conn.interrupt()
         except:
             pass
-        thread.join(timeout=1.0)  # Give it a second to clean up
-        conn.close()
+        
+        # Give thread time to clean up, but don't wait forever
+        thread.join(timeout=0.5)
+        
+        # Close connection regardless of thread state
+        try:
+            conn.close()
+        except:
+            pass
+        
         return None  # Indicate timeout
     
-    conn.close()
+    # Query completed normally
+    try:
+        conn.close()
+    except:
+        pass
     
     if exception[0] is not None:
         raise exception[0]
