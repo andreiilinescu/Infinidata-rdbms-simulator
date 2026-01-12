@@ -1,6 +1,10 @@
 """
 Test timeout functionality for DuckDB query execution.
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import time
 import duckdb
 from InfiniQuantumSim.sqlEinSum import contraction_eval_duckdb

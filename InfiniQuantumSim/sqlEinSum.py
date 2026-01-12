@@ -64,15 +64,12 @@ def contraction_eval_duckdb(query, timeout=None):
     conn = duckdb.connect()
     result = [None]
     exception = [None]
-    completed = [False]
     
     def run_query():
         try:
             result[0] = conn.sql(query).fetchall()
-            completed[0] = True
         except Exception as e:
-            if not completed[0]:  # Only store exception if query didn't complete
-                exception[0] = e
+            exception[0] = e
     
     thread = threading.Thread(target=run_query, daemon=True)
     thread.start()

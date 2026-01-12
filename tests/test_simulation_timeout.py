@@ -1,6 +1,10 @@
 """
 Integration test for timeout functionality in actual quantum circuit simulation.
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import time
 import InfiniQuantumSim.TLtensor as tlt
 
