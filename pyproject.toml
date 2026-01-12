@@ -1,5 +1,5 @@
 [project]
-name = "infinidata-rdbms-simulator"
+name = "infiniquantumsim"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
